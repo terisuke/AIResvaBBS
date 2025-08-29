@@ -1,0 +1,23 @@
+# Core dependencies
+fastapi==0.115.4
+uvicorn[standard]==0.32.0
+websockets==13.1
+python-multipart==0.0.9
+
+# Async HTTP
+aiohttp==3.10.10
+httpx==0.27.0
+
+# LLM APIs
+openai==1.54.3
+anthropic==0.39.0
+google-generativeai==0.8.3
+xai-sdk==1.1.0
+
+# Data validation
+pydantic==2.9.2
+pyyaml==6.0.2
+
+# Utils
+python-dotenv==1.0.1
+typing-extensions==4.12.2

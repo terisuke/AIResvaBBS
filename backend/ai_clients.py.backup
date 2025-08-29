@@ -1,0 +1,134 @@
+import os
+import random
+from typing import Optional
+from xai_sdk import Client as XAIClient
+from xai_sdk.chat import user, system
+from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic
+import google.generativeai as genai
+from dotenv import load_dotenv
+
+load_dotenv()
+
+class AIClientFactory:
+    """キャラクターに応じて固定のAPIクライアントを返す"""
+    
+    CHARACTER_API_MAPPING = {
+        "grok": "grok",
+        "gpt": "openai", 
+        "claude": "anthropic",
+        "gemini": "google",
+        "nanashi": "random"
+    }
+    
+    @staticmethod
+    def get_client(character_id: str):
+        """
+        キャラクターIDに基づいて固定のAPIクライアントを返す
+        PRIMARY_APIはフォールバック用
+        """
+        api_type = AIClientFactory.CHARACTER_API_MAPPING.get(
+            character_id, 
+            os.getenv("PRIMARY_API", "openai")
+        )
+        
+        if api_type == "random":
+            api_type = random.choice(["openai", "anthropic", "google"])
+        
+        if api_type == "grok":
+            return GrokClient()
+        elif api_type == "openai":
+            return OpenAIClient()
+        elif api_type == "anthropic":
+            return AnthropicClient()
+        elif api_type == "google":
+            return GeminiClient()
+        else:
+            return OpenAIClient()
+
+class GrokClient:
+    """Grok API専用クライアント"""
+    def __init__(self):
+        api_key = os.getenv("GROK_API_KEY")
+        if not api_key:
+            raise ValueError("GROK_API_KEY is not set")
+        self.client = XAIClient(api_key=api_key, timeout=3600)
+    
+    async def generate_response(self, prompt: str, system_prompt: str, max_length: int = 100) -> str:
+        chat = self.client.chat.create(model="grok-2-latest")
+        chat.append(system(system_prompt))
+        chat.append(user(prompt))
+        response = chat.sample()
+        return self._truncate_response(response.content, max_length)
+    
+    def _truncate_response(self, content: str, max_length: int) -> str:
+        if len(content) <= max_length:
+            return content
+        truncated = content[:max_length]
+        last_period = max(
+            truncated.rfind('。'),
+            truncated.rfind('！'),
+            truncated.rfind('？'),
+            truncated.rfind('.')
+        )
+        if last_period > max_length * 0.7:
+            return truncated[:last_period + 1]
+        return truncated + "..."
+
+class OpenAIClient:
+    """OpenAI API専用クライアント"""
+    def __init__(self):
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY is not set")
+        self.client = AsyncOpenAI(api_key=api_key)
+    
+    async def generate_response(self, prompt: str, system_prompt: str, max_length: int = 100) -> str:
+        response = await self.client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=max_length // 2,
+            temperature=0.8
+        )
+        return response.choices[0].message.content
+
+class AnthropicClient:
+    """Anthropic API専用クライアント"""
+    def __init__(self):
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY is not set")
+        self.client = AsyncAnthropic(api_key=api_key)
+    
+    async def generate_response(self, prompt: str, system_prompt: str, max_length: int = 100) -> str:
+        response = await self.client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=max_length // 2,
+            system=system_prompt,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.8
+        )
+        return response.content[0].text
+
+class GeminiClient:
+    """Google Gemini API専用クライアント"""
+    def __init__(self):
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY is not set")
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    async def generate_response(self, prompt: str, system_prompt: str, max_length: int = 100) -> str:
+        full_prompt = f"{system_prompt}\n\n{prompt}"
+        response = await self.model.generate_content_async(
+            full_prompt,
+            generation_config=genai.GenerationConfig(
+                max_output_tokens=max_length // 2,
+                temperature=0.8
+            )
+        )
+        return response.text
