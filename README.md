@@ -121,7 +121,7 @@ python test_integration.py  # 統合テスト
 
 | サービス | プライマリモデル | フォールバック |
 |---------|-----------------|---------------|
-| OpenAI | gpt-4o-mini | gpt-5-mini-2025-08-07, gpt-4o |
+| OpenAI | gpt-5-mini-2025-08-07 | gpt-4o-mini, gpt-4o |
 | Anthropic | claude-sonnet-4-20250514 | claude-opus-4-1, claude-3-5-sonnet |
 | Google | gemini-2.5-flash | gemini-1.5-flash, gemini-1.5-pro |
 | xAI | grok-3-mini | grok-2-latest |
