@@ -6,9 +6,12 @@ import json
 import asyncio
 from datetime import datetime
 import uuid
+import logging
 
 from thread_manager import ThreadManager
 from characters import CHARACTERS
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="AI Resuba BBS API", version="1.0.0")
 
@@ -135,21 +138,24 @@ async def websocket_arena(websocket: WebSocket):
                 
                 async def run_thread():
                     try:
-                        # Track sent posts
                         sent_posts = set()
-                        
-                        # Start the thread generation in background
                         thread_task = asyncio.create_task(thread_manager.start_thread())
+                        title_sent = thread_manager.title != ""
                         
                         while thread_manager.is_running or not thread_task.done():
                             await asyncio.sleep(0.5)
                             
-                            # Check for new posts
+                            if not title_sent and thread_manager.title:
+                                await websocket.send_json({
+                                    "type": "thread_title_updated",
+                                    "title": thread_manager.title
+                                })
+                                title_sent = True
+                            
                             for post in thread_manager.posts:
                                 if post.number not in sent_posts:
                                     sent_posts.add(post.number)
                                     
-                                    # Send post_start event for streaming UI
                                     await websocket.send_json({
                                         "type": "post_start",
                                         "post": {
@@ -161,20 +167,26 @@ async def websocket_arena(websocket: WebSocket):
                                         }
                                     })
                                     
-                                    # Simulate streaming by sending content in chunks
                                     content = post.content
-                                    chunk_size = 10  # Send 10 characters at a time
                                     
-                                    for i in range(0, len(content), chunk_size):
-                                        chunk = content[i:i+chunk_size]
+                                    if content:
+                                        chunk_size = 10
+                                        for i in range(0, len(content), chunk_size):
+                                            chunk = content[i:i+chunk_size]
+                                            await websocket.send_json({
+                                                "type": "post_stream",
+                                                "post_number": post.number,
+                                                "content_chunk": chunk
+                                            })
+                                            await asyncio.sleep(0.05)
+                                    else:
+                                        logger.warning(f"Empty content for {post.character_name} (post #{post.number})")
                                         await websocket.send_json({
                                             "type": "post_stream",
                                             "post_number": post.number,
-                                            "content_chunk": chunk
+                                            "content_chunk": ""
                                         })
-                                        await asyncio.sleep(0.05)  # Small delay for streaming effect
                                     
-                                    # Send post_complete event
                                     await websocket.send_json({
                                         "type": "post_complete",
                                         "post": {
@@ -188,7 +200,6 @@ async def websocket_arena(websocket: WebSocket):
                                         }
                                     })
                         
-                        # Wait for thread task to complete
                         await thread_task
                         
                         await websocket.send_json({

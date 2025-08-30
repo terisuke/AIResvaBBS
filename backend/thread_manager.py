@@ -72,12 +72,13 @@ class ThreadManager:
         response_length = select_response_length(post_number)
         
         # レスポンスの長さに応じてmax_tokensを設定
+        # より自然なレスバらしく、基本的に短めで時々長めに
         if response_length == ResponseLength.SHORT:
-            max_tokens = 100
+            max_tokens = 150  # 短いレス（1-2行）
         elif response_length == ResponseLength.MEDIUM:
-            max_tokens = 200
+            max_tokens = 300  # 普通のレス（3-5行）
         else:  # LONG
-            max_tokens = 400
+            max_tokens = 600  # 長めのレス（熱くなった時）
         
         anchors = []
         if not is_first and self.posts and random.random() < 0.3:

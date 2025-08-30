@@ -1,6 +1,7 @@
 import os
 import random
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
+from abc import ABC, abstractmethod
 from xai_sdk import Client as XAIClient
 from xai_sdk.chat import user, system
 from openai import AsyncOpenAI
@@ -10,17 +11,92 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from dotenv import load_dotenv
 import logging
 
+# Suppress gRPC and Abseil warnings
+os.environ["GRPC_VERBOSITY"] = "ERROR"
+logging.getLogger('absl').setLevel(logging.ERROR)
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# MODEL_FALLBACKS: Updated with the correct models
+# Model fallback configuration
 MODEL_FALLBACKS = {
     "grok": ["grok-3-mini", "grok-2-latest"],
-    "openai": ["gpt-5-mini", "gpt-4o", "gpt-4o-mini"],
+    "openai": ["gpt-4o-mini", "gpt-5-mini-2025-08-07", "gpt-4o"],
     "anthropic": ["claude-sonnet-4-20250514", "claude-opus-4-1-20250805", "claude-3-5-sonnet-20240620"],
-    "google": ["gemini-2.5-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+    "google": ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 }
+
+# Default parameters for each API
+DEFAULT_PARAMS = {
+    "temperature": 0.8,
+    "top_p": 0.9,
+    "frequency_penalty": 0.1,
+    "presence_penalty": 0.1
+}
+
+def get_api_key(env_var: str) -> str:
+    """
+    Get API key from environment variable
+    
+    Args:
+        env_var: Name of the environment variable
+        
+    Returns:
+        str: The API key
+        
+    Raises:
+        ValueError: If the API key is not set
+    """
+    api_key = os.getenv(env_var)
+    if not api_key:
+        raise ValueError(f"{env_var} is not set")
+    return api_key
+
+class BaseAIClient(ABC):
+    """Base class for all AI clients"""
+    
+    def __init__(self, api_type: str):
+        self.api_type = api_type
+        self.models = MODEL_FALLBACKS.get(api_type, [])
+        
+    @abstractmethod
+    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
+        """
+        Generate a response from the AI model
+        
+        Args:
+            prompt: The user's input prompt
+            system_prompt: The system instructions for the model
+            max_tokens: Maximum number of tokens in the response
+            
+        Returns:
+            str: The generated response text
+            
+        Raises:
+            Exception: If all model fallbacks fail
+        """
+        pass
+    
+    def _truncate_response(self, content: str, max_tokens: int) -> str:
+        """Truncate response to approximate token limit"""
+        # Approximate 2 characters per token for Japanese text
+        max_chars = max_tokens * 2
+        if len(content) <= max_chars:
+            return content
+        
+        truncated = content[:max_chars]
+        # Find the last sentence ending
+        last_period = max(
+            truncated.rfind('。'),
+            truncated.rfind('！'),
+            truncated.rfind('？'),
+            truncated.rfind('.')
+        )
+        
+        if last_period > max_chars * 0.7:
+            return truncated[:last_period + 1]
+        return truncated + "..."
 
 class AIClientFactory:
     """キャラクターに応じて固定のAPIクライアントを返す"""
@@ -58,14 +134,12 @@ class AIClientFactory:
         else:
             return OpenAIClient()
 
-class GrokClient:
+class GrokClient(BaseAIClient):
     """Grok API専用クライアント"""
     def __init__(self):
-        api_key = os.getenv("GROK_API_KEY")
-        if not api_key:
-            raise ValueError("GROK_API_KEY is not set")
+        super().__init__("grok")
+        api_key = get_api_key("GROK_API_KEY")
         self.client = XAIClient(api_key=api_key, timeout=3600)
-        self.models = MODEL_FALLBACKS["grok"]
     
     async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
         for model in self.models:
@@ -75,80 +149,80 @@ class GrokClient:
                 chat.append(user(prompt))
                 response = chat.sample()
                 logger.info(f"Grok: Successfully used model {model}")
-                return self._truncate_response(response.content, max_tokens)
+                return self._truncate_response(response.content, max_tokens * 2)
             except Exception as e:
                 logger.warning(f"Grok: Failed with model {model}: {str(e)}")
                 if model == self.models[-1]:
                     raise e
                 continue
-    
-    def _truncate_response(self, content: str, max_tokens: int) -> str:
-        # max_tokensを文字数に変換（日本語の場合、約2文字/トークン）
-        max_chars = max_tokens * 2
-        if len(content) <= max_chars:
-            return content
-        truncated = content[:max_chars]
-        last_period = max(
-            truncated.rfind('。'),
-            truncated.rfind('！'),
-            truncated.rfind('？'),
-            truncated.rfind('.')
-        )
-        if last_period > max_chars * 0.7:
-            return truncated[:last_period + 1]
-        return truncated + "..."
 
-class OpenAIClient:
+class OpenAIClient(BaseAIClient):
     """OpenAI API専用クライアント"""
     def __init__(self):
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY is not set")
+        super().__init__("openai")
+        api_key = get_api_key("OPENAI_API_KEY")
         self.client = AsyncOpenAI(api_key=api_key)
-        self.models = MODEL_FALLBACKS["openai"]
     
     async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
         for model in self.models:
             try:
-                # OpenAIClient: Corrected parameters for gpt-5-mini
-                params = {
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": prompt}
-                    ],
-                }
-                if model == "gpt-5-mini":
-                    params["max_completion_tokens"] = max_tokens
-                    params["temperature"] = 1.0
+                # GPT-5-mini uses max_completion_tokens instead of max_tokens
+                if model.startswith("gpt-5"):
+                    params = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_completion_tokens": max_tokens,
+                        "temperature": 1.0,
+                        "include_reasoning": False
+                    }
                 else:
-                    params["max_tokens"] = max_tokens
-                    params["temperature"] = 0.8
+                    params = {
+                        "model": model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "max_tokens": max_tokens,
+                        "temperature": DEFAULT_PARAMS["temperature"],
+                        "top_p": DEFAULT_PARAMS["top_p"],
+                        "frequency_penalty": DEFAULT_PARAMS["frequency_penalty"],
+                        "presence_penalty": DEFAULT_PARAMS["presence_penalty"]
+                    }
                 
                 response = await self.client.chat.completions.create(**params)
                 logger.info(f"OpenAI: Successfully used model {model}")
-                return response.choices[0].message.content
+                
+                content = response.choices[0].message.content
+                if content is None or content == "":
+                    logger.warning(f"OpenAI: Empty response from model {model}, using fallback")
+                    if model == self.models[-1]:
+                        return "そうですね、確かに興味深い話題ですね。"
+                    continue
+                    
+                return content
             except Exception as e:
                 logger.warning(f"OpenAI: Failed with model {model}: {str(e)}")
                 if model == self.models[-1]:
                     raise e
                 continue
 
-class AnthropicClient:
+class AnthropicClient(BaseAIClient):
     """Anthropic API専用クライアント"""
     def __init__(self):
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY is not set")
+        super().__init__("anthropic")
+        api_key = get_api_key("ANTHROPIC_API_KEY")
         self.client = AsyncAnthropic(api_key=api_key)
-        self.models = MODEL_FALLBACKS["anthropic"]
     
     async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
         for model in self.models:
             try:
+                adjusted_max_tokens = min(max_tokens * 2, 1500)
                 response = await self.client.messages.create(
                     model=model,
-                    max_tokens=max_tokens,
+                    max_tokens=adjusted_max_tokens,
                     system=system_prompt,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.8
@@ -161,14 +235,12 @@ class AnthropicClient:
                     raise e
                 continue
 
-class GeminiClient:
+class GeminiClient(BaseAIClient):
     """Google Gemini API専用クライアント"""
     def __init__(self):
-        api_key = os.getenv("GOOGLE_API_KEY")
-        if not api_key:
-            raise ValueError("GOOGLE_API_KEY is not set")
+        super().__init__("google")
+        api_key = get_api_key("GOOGLE_API_KEY")
         genai.configure(api_key=api_key)
-        self.models = MODEL_FALLBACKS["google"]
         self.current_model = None
         self._initialize_model()
     
@@ -189,7 +261,6 @@ class GeminiClient:
     async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
         full_prompt = f"{system_prompt}\n\n{prompt}"
         
-        # GeminiClient: Added safety_settings
         safety_settings = [
             {
                 "category": HarmCategory.HARM_CATEGORY_HARASSMENT,
@@ -215,18 +286,46 @@ class GeminiClient:
                     self.current_model = genai.GenerativeModel(model_name)
                     self.current_model_name = model_name
                 
+                generation_config = genai.GenerationConfig(
+                    max_output_tokens=max_tokens * 2,
+                    temperature=0.8,
+                    top_p=0.9
+                )
+                
                 response = await self.current_model.generate_content_async(
                     full_prompt,
-                    generation_config=genai.GenerationConfig(
-                        max_output_tokens=max_tokens,
-                        temperature=0.8
-                    ),
+                    generation_config=generation_config,
                     safety_settings=safety_settings,
                 )
-                logger.info(f"Gemini: Successfully used model {model_name}")
-                return response.text
+                
+                if not response.candidates:
+                    logger.warning(f"Gemini: No candidates returned for model {model_name}")
+                    return "なるほど、それは興味深い話題ですね。"
+                
+                candidate = response.candidates[0]
+                
+                if candidate.content and candidate.content.parts and candidate.content.parts[0].text:
+                    text = candidate.content.parts[0].text.strip()
+                    if text:
+                        logger.info(f"Gemini: Successfully used model {model_name}")
+                        return text
+                
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason == 2:
+                    logger.warning(f"Gemini: Response truncated due to token limit")
+                    if candidate.content and candidate.content.parts:
+                        partial_text = candidate.content.parts[0].text
+                        if partial_text and partial_text.strip():
+                            return partial_text
+                
+                logger.warning(f"Gemini: Using fallback response for {model_name}")
+                return "そうだね、確かにそういう見方もあるね。"
             except Exception as e:
                 logger.warning(f"Gemini: Failed with model {model_name}: {str(e)}")
+                if "response.text" in str(e) and "finish_reason" in str(e):
+                    logger.warning(f"Gemini: Detected finish_reason error for {model_name}")
+                    if model_name == self.models[-1]:
+                        return "そうですね、確かに興味深い議論です。"
+                    continue
                 if model_name == self.models[-1]:
                     raise e
                 continue
