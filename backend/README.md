@@ -104,7 +104,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 各APIのフォールバック順序：
 
-- **OpenAI**: gpt-5-mini-2025-08-07 → gpt-4o-mini → gpt-4o
+- **OpenAI (GPT君)**: gpt-5-mini-2025-08-07 → gpt-4o-mini → gpt-4o
 - **Anthropic**: claude-sonnet-4 → claude-opus-4 → claude-3.5-sonnet
 - **Google**: gemini-2.5-flash → gemini-1.5-flash → gemini-1.5-pro
 - **xAI**: grok-3-mini → grok-2-latest
