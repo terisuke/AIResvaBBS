@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # Model fallback configuration
 MODEL_FALLBACKS = {
     "grok": ["grok-3-mini", "grok-2-latest"],
-    "openai": ["gpt-4o-mini", "gpt-5-mini-2025-08-07", "gpt-4o"],
+    "openai": ["gpt-5-mini-2025-08-07", "gpt-4o-mini", "gpt-4o"],
     "anthropic": ["claude-sonnet-4-20250514", "claude-opus-4-1-20250805", "claude-3-5-sonnet-20240620"],
     "google": ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
 }
@@ -61,14 +61,14 @@ class BaseAIClient(ABC):
         self.models = MODEL_FALLBACKS.get(api_type, [])
         
     @abstractmethod
-    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
+    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 8192) -> str:
         """
         Generate a response from the AI model
         
         Args:
             prompt: The user's input prompt
             system_prompt: The system instructions for the model
-            max_tokens: Maximum number of tokens in the response
+            max_tokens: Maximum number of tokens (ignored - length control via prompt)
             
         Returns:
             str: The generated response text
@@ -78,25 +78,7 @@ class BaseAIClient(ABC):
         """
         pass
     
-    def _truncate_response(self, content: str, max_tokens: int) -> str:
-        """Truncate response to approximate token limit"""
-        # Approximate 2 characters per token for Japanese text
-        max_chars = max_tokens * 2
-        if len(content) <= max_chars:
-            return content
-        
-        truncated = content[:max_chars]
-        # Find the last sentence ending
-        last_period = max(
-            truncated.rfind('。'),
-            truncated.rfind('！'),
-            truncated.rfind('？'),
-            truncated.rfind('.')
-        )
-        
-        if last_period > max_chars * 0.7:
-            return truncated[:last_period + 1]
-        return truncated + "..."
+    # _truncate_responseメソッドは削除（使用されていないため）
 
 class AIClientFactory:
     """キャラクターに応じて固定のAPIクライアントを返す"""
@@ -141,7 +123,7 @@ class GrokClient(BaseAIClient):
         api_key = get_api_key("GROK_API_KEY")
         self.client = XAIClient(api_key=api_key, timeout=3600)
     
-    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
+    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 8192) -> str:
         for model in self.models:
             try:
                 chat = self.client.chat.create(model=model)
@@ -149,7 +131,7 @@ class GrokClient(BaseAIClient):
                 chat.append(user(prompt))
                 response = chat.sample()
                 logger.info(f"Grok: Successfully used model {model}")
-                return self._truncate_response(response.content, max_tokens * 2)
+                return response.content  # 文字数制御はプロンプトで実施
             except Exception as e:
                 logger.warning(f"Grok: Failed with model {model}: {str(e)}")
                 if model == self.models[-1]:
@@ -163,7 +145,7 @@ class OpenAIClient(BaseAIClient):
         api_key = get_api_key("OPENAI_API_KEY")
         self.client = AsyncOpenAI(api_key=api_key)
     
-    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
+    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 8192) -> str:
         for model in self.models:
             try:
                 # GPT-5-mini uses max_completion_tokens instead of max_tokens
@@ -174,9 +156,9 @@ class OpenAIClient(BaseAIClient):
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": prompt}
                         ],
-                        "max_completion_tokens": max_tokens,
-                        "temperature": 1.0,
-                        "include_reasoning": False
+                        "max_completion_tokens": 16384,  # GPT-5の上限
+                        "temperature": 1.0
+                        # include_reasoningはサポートされていないので削除
                     }
                 else:
                     params = {
@@ -185,7 +167,7 @@ class OpenAIClient(BaseAIClient):
                             {"role": "system", "content": system_prompt},
                             {"role": "user", "content": prompt}
                         ],
-                        "max_tokens": max_tokens,
+                        "max_tokens": 16384,  # OpenAIの上限
                         "temperature": DEFAULT_PARAMS["temperature"],
                         "top_p": DEFAULT_PARAMS["top_p"],
                         "frequency_penalty": DEFAULT_PARAMS["frequency_penalty"],
@@ -197,7 +179,14 @@ class OpenAIClient(BaseAIClient):
                 
                 content = response.choices[0].message.content
                 if content is None or content == "":
-                    logger.warning(f"OpenAI: Empty response from model {model}, using fallback")
+                    # GPT-5のデバッグ情報を追加
+                    if model.startswith("gpt-5"):
+                        logger.warning(f"OpenAI: Empty response from GPT-5 model {model}")
+                        logger.warning(f"  Token usage: {getattr(response, 'usage', 'N/A')}")
+                        logger.warning(f"  Finish reason: {response.choices[0].finish_reason}")
+                    else:
+                        logger.warning(f"OpenAI: Empty response from model {model}, using fallback")
+                    
                     if model == self.models[-1]:
                         return "そうですね、確かに興味深い話題ですね。"
                     continue
@@ -216,10 +205,10 @@ class AnthropicClient(BaseAIClient):
         api_key = get_api_key("ANTHROPIC_API_KEY")
         self.client = AsyncAnthropic(api_key=api_key)
     
-    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
+    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 8192) -> str:
         for model in self.models:
             try:
-                adjusted_max_tokens = min(max_tokens * 2, 1500)
+                adjusted_max_tokens = 8192  # Anthropicの実用的な上限
                 response = await self.client.messages.create(
                     model=model,
                     max_tokens=adjusted_max_tokens,
@@ -258,7 +247,7 @@ class GeminiClient(BaseAIClient):
                     raise e
                 continue
     
-    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 100) -> str:
+    async def generate_response(self, prompt: str, system_prompt: str, max_tokens: int = 8192) -> str:
         full_prompt = f"{system_prompt}\n\n{prompt}"
         
         safety_settings = [
@@ -287,7 +276,7 @@ class GeminiClient(BaseAIClient):
                     self.current_model_name = model_name
                 
                 generation_config = genai.GenerationConfig(
-                    max_output_tokens=max_tokens * 2,
+                    max_output_tokens=8192,  # Geminiの実用的な上限
                     temperature=0.8,
                     top_p=0.9
                 )

@@ -161,14 +161,14 @@ def get_random_character(exclude: List[str] = None) -> AICharacter:
 def select_response_length(post_count: int) -> ResponseLength:
     """レス番号に応じてレスの長さを決定"""
     if post_count < 10:
-        # 序盤は短め
-        return random.choice([ResponseLength.SHORT, ResponseLength.SHORT, ResponseLength.MEDIUM])
+        # 序盤は中程度がメイン
+        return random.choice([ResponseLength.SHORT, ResponseLength.MEDIUM, ResponseLength.MEDIUM, ResponseLength.MEDIUM])
     elif post_count < 30:
-        # 中盤は通常
-        return random.choice([ResponseLength.SHORT, ResponseLength.MEDIUM, ResponseLength.MEDIUM])
+        # 中盤は通常〜長めも混ぜる
+        return random.choice([ResponseLength.MEDIUM, ResponseLength.MEDIUM, ResponseLength.MEDIUM, ResponseLength.LONG])
     elif post_count % 20 == 0:
         # 20の倍数で長文（エスカレーション）
         return ResponseLength.LONG
     else:
         # 終盤は激しく
-        return random.choice([ResponseLength.SHORT, ResponseLength.MEDIUM, ResponseLength.LONG])
+        return random.choice([ResponseLength.SHORT, ResponseLength.MEDIUM, ResponseLength.MEDIUM, ResponseLength.LONG])

@@ -1,11 +1,14 @@
 import asyncio
 import random
+import logging
 from typing import List, Dict, Optional
 from datetime import datetime
 from dataclasses import dataclass
 
 from ai_clients import AIClientFactory
 from characters import CHARACTERS, ResponseLength, select_response_length
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class Post:
@@ -38,11 +41,27 @@ class ThreadManager:
         
         await self._create_post("grok", is_first=True)
         
+        consecutive_errors = 0
+        max_consecutive_errors = 5
+        
         while self.is_running and len(self.posts) < self.max_posts:
             next_character = self._select_next_character()
-            await self._create_post(next_character)
+            post = await self._create_post(next_character)
             
-            await asyncio.sleep(random.uniform(2, 5))
+            if post is None:
+                consecutive_errors += 1
+                logger.warning(f"Failed to create post. Consecutive errors: {consecutive_errors}")
+                
+                if consecutive_errors >= max_consecutive_errors:
+                    logger.error(f"Too many consecutive errors ({consecutive_errors}). Stopping thread.")
+                    self.is_running = False
+                    break
+                    
+                # エラー時は少し長めに待機
+                await asyncio.sleep(5)
+            else:
+                consecutive_errors = 0  # 成功したらカウンタをリセット
+                await asyncio.sleep(random.uniform(2, 5))
     
     def _select_next_character(self) -> str:
         """次に発言するキャラクターを選択"""
@@ -64,58 +83,81 @@ class ThreadManager:
     
     async def _create_post(self, character_id: str, is_first: bool = False):
         """レスを作成"""
-        character = CHARACTERS[character_id]
-        post_number = len(self.posts) + 1
-        
-        client = AIClientFactory.get_client(character_id)
-        
-        response_length = select_response_length(post_number)
-        
-        # レスポンスの長さに応じてmax_tokensを設定
-        # より自然なレスバらしく、基本的に短めで時々長めに
-        if response_length == ResponseLength.SHORT:
-            max_tokens = 150  # 短いレス（1-2行）
-        elif response_length == ResponseLength.MEDIUM:
-            max_tokens = 300  # 普通のレス（3-5行）
-        else:  # LONG
-            max_tokens = 600  # 長めのレス（熱くなった時）
-        
-        anchors = []
-        if not is_first and self.posts and random.random() < 0.3:
-            recent_posts = self.posts[-5:]
-            anchor_target = random.choice(recent_posts)
-            anchors = [anchor_target.number]
-        
-        prompt = self._build_prompt(character_id, anchors, is_first)
-        
-        system_prompt = character.get_system_prompt(thread_context=self.title)
-        
-        content = await client.generate_response(
-            prompt=prompt,
-            system_prompt=system_prompt,
-            max_tokens=max_tokens
-        )
-        
-        if anchors:
-            content = f">>{anchors[0]} {content}"
-        
-        post = Post(
-            number=post_number,
-            character_id=character_id,
-            character_name=character.name,
-            content=content,
-            timestamp=datetime.now(),
-            anchors=anchors,
-            response_length=response_length
-        )
-        
-        self.posts.append(post)
-        return post
+        try:
+            character = CHARACTERS[character_id]
+            post_number = len(self.posts) + 1
+            
+            client = AIClientFactory.get_client(character_id)
+            
+            response_length = select_response_length(post_number)
+            
+            # レスポンスの長さをプロンプトで指定
+            if response_length == ResponseLength.SHORT:
+                length_instruction = "50文字程度で短く返答してください。"
+            elif response_length == ResponseLength.MEDIUM:
+                length_instruction = "150文字程度で返答してください。"
+            else:  # LONG
+                length_instruction = "300文字程度で熱く語ってください。"
+            
+            anchors = []
+            if not is_first and self.posts and random.random() < 0.3:
+                recent_posts = self.posts[-5:]
+                anchor_target = random.choice(recent_posts)
+                anchors = [anchor_target.number]
+            
+            prompt = self._build_prompt(character_id, anchors, is_first, length_instruction)
+            
+            system_prompt = character.get_system_prompt(thread_context=self.title)
+            
+            # エラーハンドリングを追加
+            retry_count = 0
+            max_retries = 3
+            
+            while retry_count < max_retries:
+                try:
+                    content = await client.generate_response(
+                        prompt=prompt,
+                        system_prompt=system_prompt
+                        # max_tokensは省略（デフォルト100000）
+                    )
+                    break
+                except Exception as e:
+                    retry_count += 1
+                    logger.warning(f"API error for {character_id} (attempt {retry_count}/{max_retries}): {str(e)}")
+                    
+                    if retry_count >= max_retries:
+                        # フォールバックレスポンス
+                        logger.error(f"Failed to generate response for {character_id} after {max_retries} attempts")
+                        content = "なるほど、そういう考え方もありますね。"
+                    else:
+                        # リトライ前に少し待機
+                        await asyncio.sleep(2 * retry_count)
+            
+            if anchors:
+                content = f">>{anchors[0]} {content}"
+            
+            post = Post(
+                number=post_number,
+                character_id=character_id,
+                character_name=character.name,
+                content=content,
+                timestamp=datetime.now(),
+                anchors=anchors,
+                response_length=response_length
+            )
+            
+            self.posts.append(post)
+            return post
+            
+        except Exception as e:
+            logger.error(f"Critical error in _create_post for {character_id}: {str(e)}")
+            # エラーが発生してもスレッドは継続
+            return None
     
-    def _build_prompt(self, character_id: str, anchors: List[int], is_first: bool) -> str:
+    def _build_prompt(self, character_id: str, anchors: List[int], is_first: bool, length_instruction: str) -> str:
         """キャラクター用のプロンプトを構築"""
         if is_first:
-            return f"スレッドタイトル「{self.title}」について、議論を始めてください。挑発的に。"
+            return f"スレッドタイトル「{self.title}」について、議論を始めてください。挑発的に。{length_instruction}"
         
         context = self._get_recent_context(limit=5)
         
@@ -125,13 +167,13 @@ class ThreadManager:
 最近のレス:
 {context}
 
->>{anchors[0]}（{anchor_post.character_name}）の発言に対して反応してください。"""
+>>{anchors[0]}（{anchor_post.character_name}）の発言に対して反応してください。{length_instruction}"""
         
         return f"""スレッド: {self.title}
 最近のレス:
 {context}
 
-議論に参加してください。"""
+議論に参加してください。{length_instruction}"""
     
     def _get_recent_context(self, limit: int = 5) -> str:
         """直近のレスを文字列化"""
