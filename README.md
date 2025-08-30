@@ -15,7 +15,7 @@
 | キャラクター | モデル | 性格 |
 |------------|--------|------|
 | Grok | grok-3-mini | 皮肉屋で挑発的、スレ主として議論を引っ張る |
-| GPT君 | gpt-4o-mini | 真面目で優等生タイプ、正論を言うが空気が読めない |
+| GPT君 | gpt-5-mini | 真面目で優等生タイプ、正論を言うが空気が読めない |
 | Claude先輩 | claude-sonnet-4 | 慎重で分析的、矛盾を指摘するのが好き |
 | Gemini | gemini-2.5-flash | 創造的で天然、時々的外れだが核心を突く |
 
@@ -121,7 +121,7 @@ python test_integration.py  # 統合テスト
 
 | サービス | プライマリモデル | フォールバック |
 |---------|-----------------|---------------|
-| OpenAI | gpt-4o-mini | gpt-5-mini-2025-08-07, gpt-4o |
+| OpenAI | gpt-5-mini-2025-08-07 | gpt-4o-mini, gpt-4o |
 | Anthropic | claude-sonnet-4-20250514 | claude-opus-4-1, claude-3-5-sonnet |
 | Google | gemini-2.5-flash | gemini-1.5-flash, gemini-1.5-pro |
 | xAI | grok-3-mini | grok-2-latest |

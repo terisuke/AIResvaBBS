@@ -1,9 +1,11 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Literal
 import json
 import asyncio
+import signal
 from datetime import datetime
 import uuid
 import logging
@@ -13,7 +15,39 @@ from characters import CHARACTERS
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="AI Resuba BBS API", version="1.0.0")
+# グローバル変数
+active_threads: Dict[str, ThreadManager] = {}
+active_connections: List[WebSocket] = []
+shutdown_event = asyncio.Event()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """アプリケーションのライフサイクル管理"""
+    # 起動時
+    logger.info("AI Resuba BBS API starting...")
+    yield
+    # シャットダウン時
+    logger.info("AI Resuba BBS API shutting down...")
+    
+    # アクティブなスレッドを停止
+    for thread_id, thread_manager in active_threads.items():
+        logger.info(f"Stopping thread {thread_id}")
+        thread_manager.stop_thread()
+    
+    # WebSocket接続をクローズ
+    for websocket in active_connections[:]:  # リストのコピーを使用
+        try:
+            await websocket.close()
+        except Exception as e:
+            logger.warning(f"Error closing websocket: {e}")
+    
+    logger.info("Shutdown complete")
+
+app = FastAPI(
+    title="AI Resuba BBS API", 
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,9 +56,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-active_threads: Dict[str, ThreadManager] = {}
-active_connections: List[WebSocket] = []
 
 
 class ThreadCreateRequest(BaseModel):
